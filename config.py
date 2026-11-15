@@ -1,6 +1,9 @@
-"""Tiny-ZH-32M 全局配置。
+"""Tiny-ZH-64M 全局配置。
 
 所有超参集中在这里，训练/导出/评测/部署都从这里读，避免散落。
+
+64.8M = 深而窄（13 层 640 维），比 80M 的 12 层 768 维更深。
+A10 实测：seq1024 × bs32 可达 51,001 tok/s（bs64 会 OOM，显存上限在此）。
 """
 from dataclasses import dataclass, asdict, field
 
@@ -11,12 +14,12 @@ class ModelConfig:
     vocab_size: int = 6400
 
     # ---- 主干 ----
-    hidden_size: int = 768
-    num_layers: int = 12
-    num_heads: int = 12
-    num_kv_heads: int = 4
+    hidden_size: int = 640
+    num_layers: int = 13
+    num_heads: int = 10
+    num_kv_heads: int = 5
     head_dim: int = 64            # = hidden_size / num_heads
-    intermediate_size: int = 2048  # SwiGLU 中间维
+    intermediate_size: int = 1792  # SwiGLU 中间维，ffn/hidden = 2.8
 
     # ---- 位置编码 ----
     max_position_embeddings: int = 1024

@@ -210,13 +210,96 @@ def main():
     best_val = float("inf")
     os.makedirs(a.out, exist_ok=True)
     ckpt_path = os.path.join(a.out, "last.pt")
+
+    def save_atomic(obj, path):
+        """原子写盘：先写 .tmp，fsync 落盘，再 rename 覆盖。
+
+        为什么必须这样：notebook 实例随时可能被强制关机，
+        直接 torch.save(path) 在断电时会留下半个文件，
+        load 时报 "unexpected EOF"，整段训练成果作废。
+        rename 在同一文件系统内是原子的，断电后要么是旧文件，要么是新文件，
+        不会出现半个。
+        """
+        tmp = path + ".tmp"
+        torch.save(obj, tmp)
+        # 确保数据真正写到存储，而不是停在页缓存里
+        with open(tmp, "rb") as f:
+            os.fsync(f.fileno())
+        os.replace(tmp, path)      # 原子替换
+        # 父目录也要同步，保证 rename 本身持久化
+        try:
+            dfd = os.open(os.path.dirname(os.path.abspath(path)) or ".", os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
+
+    def rotate_ckpt(step):
+        """保留最近 3 个带步号的 checkpoint，防止 latest 本身损坏时全丢。"""
+        try:
+            keep = 3
+            olds = sorted(
+                (f for f in os.listdir(a.out)
+                 if f.startswith("step_") and f.endswith(".pt")),
+                key=lambda x: int(x[5:-3]))
+            for f in olds[:-keep] if len(olds) > keep else []:
+                os.remove(os.path.join(a.out, f))
+        except (OSError, ValueError):
+            pass
+
+    def save_ckpt(step, ck):
+        """写带步号的 checkpoint，再用硬链接把 last.pt 指过去。
+
+        64.8M 参数的 checkpoint 约 780MB（模型+优化器状态）。
+        写两份就是 1.5GB，每 250 步写一次在 NAS 上很吃力。
+        硬链接零开销，且 os.replace 同样是原子的，
+        断电后 last.pt 要么指向完整的旧文件，要么指向完整的新文件。
+        """
+        step_path = os.path.join(a.out, f"step_{step}.pt")
+        save_atomic(ck, step_path)
+        tmp = ckpt_path + ".lnk"
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            os.link(step_path, tmp)
+            os.replace(tmp, ckpt_path)
+        except OSError:
+            save_atomic(ck, ckpt_path)   # 文件系统不支持硬链接就退回复制
+
     if a.resume and os.path.exists(ckpt_path):
-        ck = torch.load(ckpt_path, map_location=dev, weights_only=False)
-        model.load_state_dict(ck["model"])
-        opt.load_state_dict(ck["opt"])
-        start_step = ck["step"]
-        best_val = ck.get("best_val", float("inf"))
-        print(f"[resume] step={start_step} best_val={best_val:.4f}")
+        try:
+            ck = torch.load(ckpt_path, map_location=dev, weights_only=False)
+            model.load_state_dict(ck["model"])
+            opt.load_state_dict(ck["opt"])
+            start_step = ck["step"]
+            best_val = ck.get("best_val", float("inf"))
+            saved_total = ck.get("total_steps")
+            print(f"[resume] step={start_step} best_val={best_val:.4f}")
+            if saved_total:
+                print(f"[resume] 沿用 checkpoint 里的 total_steps={saved_total}")
+        except Exception as e:
+            # last.pt 损坏时退到最近的 step_*.pt，而不是整个重训
+            print(f"[resume] last.pt 读取失败({type(e).__name__})，尝试轮转备份…")
+            cands = sorted(
+                (f for f in os.listdir(a.out)
+                 if f.startswith("step_") and f.endswith(".pt")),
+                key=lambda x: int(x[5:-3]), reverse=True)
+            for f in cands:
+                try:
+                    ck = torch.load(os.path.join(a.out, f), map_location=dev,
+                                    weights_only=False)
+                    model.load_state_dict(ck["model"])
+                    opt.load_state_dict(ck["opt"])
+                    start_step = ck["step"]
+                    best_val = ck.get("best_val", float("inf"))
+                    print(f"[resume] 从 {f} 恢复 step={start_step}")
+                    break
+                except Exception:
+                    continue
+            else:
+                print("[resume] 所有备份均损坏，从头开始")
 
     use_amp = dtype in (torch.bfloat16, torch.float16) and dev.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=(dtype == torch.float16 and dev.type == "cuda"))
@@ -284,6 +367,14 @@ def main():
         start_step = a.probe_steps
         t0 = time.time()
 
+    # 续训：如果 checkpoint 里记了 total_steps，就沿用，不要重新反算。
+    # 否则 --time-budget 每次重跑都会算出不同的总步数，LR 余弦曲线随之错位，
+    # 表现为续训后 loss 突然跳一下、末尾学不干净。
+    if saved_total and saved_total != total_steps:
+        print(f"[resume] total_steps 从 {total_steps:,} 纠正为 {saved_total:,}")
+        total_steps = saved_total
+    print(f"[plan] 本次将跑到 step {total_steps:,}（当前 {start_step:,}）")
+
     # ---- 主循环 ----
     running = None
     spike_cnt = 0
@@ -322,21 +413,27 @@ def main():
             log_f.write(json.dumps(rec) + "\n"); log_f.flush()
 
         if (step + 1) % tcfg.save_every == 0 or step == total_steps - 1:
-            torch.save({"model": model.state_dict(), "opt": opt.state_dict(),
-                        "step": step + 1, "best_val": best_val,
-                        "model_config": mcfg.__dict__}, ckpt_path)
+            ck = {"model": model.state_dict(), "opt": opt.state_dict(),
+                  "step": step + 1, "best_val": best_val,
+                  "total_steps": total_steps,          # 续训必须沿用同一个总步数，
+                  "model_config": mcfg.__dict__}       # 否则 LR 余弦曲线会错位
+            # 先落盘 checkpoint 再做验证（验证要跑 15 个 batch，期间断电就白训）
+            save_ckpt(step + 1, ck)
+            rotate_ckpt(step + 1)
             val = evaluate()
             print(f"  [val] {val:.4f}")
             log_f.write(json.dumps({"step": step + 1, "val_loss": round(val, 4)}) + "\n")
             log_f.flush()
             if val < best_val:
                 best_val = val
-                torch.save(model.state_dict(), os.path.join(a.out, "best.pt"))
+                save_atomic(model.state_dict(), os.path.join(a.out, "best.pt"))
 
-    torch.save({"model": model.state_dict(), "opt": opt.state_dict(),
+    final_ck = {"model": model.state_dict(), "opt": opt.state_dict(),
                 "step": total_steps if not stopped else step + 1,
-                "best_val": best_val, "model_config": mcfg.__dict__}, ckpt_path)
-    torch.save(model.state_dict(), os.path.join(a.out, "final.pt"))
+                "best_val": best_val, "total_steps": total_steps,
+                "model_config": mcfg.__dict__}
+    save_ckpt(final_ck["step"], final_ck)
+    save_atomic(model.state_dict(), os.path.join(a.out, "final.pt"))
     log_f.close()
     print(f"\n[done] {a.out}  {(time.time()-t0)/60:.1f}min  best_val={best_val:.4f}")
 
