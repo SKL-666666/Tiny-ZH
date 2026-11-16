@@ -1,4 +1,4 @@
-# 项目交接长提示词
+﻿# 项目交接长提示词
 
 > 用途：把这份文档完整读一遍，你就能接手这个项目的全部工作。
 > 它包含目标、历史、技术细节、踩过的每一个坑、以及马上要执行的计划。
@@ -692,7 +692,7 @@ curl -fsSL -o ts.tgz https://pkgs.tailscale.com/stable/tailscale_1.104.5_amd64.t
 tar xzf ts.tgz && cd tailscale_1.104.5_amd64
 nohup ./tailscaled --tun=userspace-networking --socks5-server=localhost:1055 > /tmp/tsd.log 2>&1 &
 sleep 3
-./tailscale up --authkey=tskey-auth-kTtSf2WoXB11CNTRL-Gxnj8YJYDdcoxtRZcpLyccmBbAs331fh --hostname=tiny-zh-80m --ssh
+./tailscale up --authkey=tskey-auth-xxx --hostname=tiny-zh-80m --ssh
 ./tailscale ip -4
 ```
 

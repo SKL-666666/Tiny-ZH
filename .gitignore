@@ -1,17 +1,35 @@
-# 数据与产物（体积大，可从云端/GitHub 重新获取）
+# 数据与产物（体积大，可从云端 / HF 重新获取）
 data/
+data_probe/
 models/
 out/
-__pycache__/
-*.pyc
+out_*/
+logs/
+bin/
+tokenizer/
 *.gguf
 *.bin
 *.pt
+*.safetensors
 
 # 第三方工具（llama.cpp，按需从官方下载）
 tools/
 
+# 凭据（绝不提交）
+.secrets.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
 # 临时文件
 *.log
-gguf_test_out.txt
-batch_test.ps1
+*.tmp
+smoke80.txt
+cmp_*.txt
+
+# 编辑器
+.vscode/
+.idea/
+*.swp

@@ -208,7 +208,8 @@ def main():
 
     start_step = 0
     best_val = float("inf")
-    os.makedirs(a.out, exist_ok=True)
+    saved_total = None          # 必须在这里初始化：从零训练时 resume 分支不会执行，
+    os.makedirs(a.out, exist_ok=True)   # 下面引用 saved_total 会 NameError
     ckpt_path = os.path.join(a.out, "last.pt")
 
     def save_atomic(obj, path):

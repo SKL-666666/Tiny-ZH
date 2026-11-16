@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # SSH 一键就绪：装 tailscale + 起 daemon + 连接，全程有进度输出
 #
 # 今天踩过的坑，全部避开：
@@ -13,7 +13,7 @@
 #   HOSTNAME_TS=xxx AUTHKEY=yyy bash cloud/ts_up.sh
 set -u
 
-AUTHKEY="${AUTHKEY:-tskey-auth-kTtSf2WoXB11CNTRL-Gxnj8YJYDdcoxtRZcpLyccmBbAs331fh}"
+AUTHKEY="${AUTHKEY:-tskey-auth-REPLACE_WITH_YOUR_KEY}"
 TS_NAME="${TS_NAME:-tiny-zh-64m}"
 SEG="${SEG:-32}"
 WORK=/tmp/ts_install
